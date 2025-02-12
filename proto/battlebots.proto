@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package battlebots;
+
+message Stringy {
+  optional string body = 1;
+  repeated string messages = 2;
+  map<string, string> configuration = 3;
+}
+
+message Inty {
+  optional string header = 1;
+  repeated int64 ids = 2;
+  map<string, int64> configuration = 3;
+}
+
+message Mixed {
+  optional Stringy stringy = 1;
+  optional Inty inty = 2;
+}
+
+message Empty {
+  
+}
+
+service BattlebotsService {
+  rpc GetStringy(Empty) returns (Stringy);
+  rpc GetInty(Empty) returns (Inty);
+  rpc GetMixed(Empty) returns (Mixed);
+}
