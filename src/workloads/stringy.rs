@@ -28,8 +28,8 @@ impl Payload {
         }
         Self {
             body,
-            configuration,
             messages,
+            configuration,
         }
     }
 }

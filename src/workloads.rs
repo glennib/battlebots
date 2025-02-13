@@ -21,5 +21,5 @@ pub fn words(rng: &mut impl Rng, n: usize) -> String {
 /// Generate a random word
 pub fn word(rng: &mut impl Rng) -> String {
     use rand::seq::IndexedRandom;
-    names::NOUNS.choose(rng).unwrap().to_string()
+    (*names::NOUNS.choose(rng).unwrap()).to_string()
 }

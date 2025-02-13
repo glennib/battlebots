@@ -23,7 +23,7 @@ impl Payload {
         let n_ids = rng.random_range(super::COLLECTION_SIZE);
         let mut ids = Vec::with_capacity(n_ids);
         for _ in 0..n_ids {
-            ids.push(rng.random())
+            ids.push(rng.random());
         }
         Self {
             header,

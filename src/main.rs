@@ -2,12 +2,16 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 
+use anyhow::Context;
 use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
 use tracing::info;
 
+use crate::bench::benchmark;
+
+mod bench;
 mod client;
 mod proto;
 mod server;
@@ -29,23 +33,53 @@ enum Program {
 
 #[derive(Debug, Args)]
 struct Server {
-    #[arg(default_value = "0.0.0.0:55555")]
+    /// The interface on which to bind the server's listener
+    #[arg(long, default_value = "0.0.0.0:55555")]
     addr: SocketAddr,
+    /// Serve only grpc (not rest)
+    ///
+    /// Uses a different server (`tonic::transport::server`) which somehow is
+    /// faster, but does not allow regular HTTP routes.
+    #[arg(long)]
+    grpc_only: bool,
+    /// Log parallelism every second for GRPC
+    #[arg(long)]
+    grpc_logger: bool,
+}
+
+#[derive(Debug, Args)]
+struct Bench {
+    /// The type of workload
+    #[arg(long, value_enum)]
+    workload: Workload,
+    /// How many workers to use (instances of clients, (maybe) number of
+    /// connections)
+    #[arg(long)]
+    workers: NonZeroUsize,
+    /// Upper limit of requests per second
+    #[arg(long)]
+    rate: NonZeroU32,
+    /// How many seconds to run the benchmark
+    #[arg(long)]
+    duration: u64,
+    /// Microseconds of jitter for rate limiter
+    #[arg(long, default_value = "0")]
+    jitter: u64,
 }
 
 #[derive(Debug, Args)]
 struct Client {
+    /// Client type
     #[command(subcommand)]
     r#type: ClientType,
-    /// The type of workload
-    #[arg(value_enum)]
-    workload: Workload,
-    workers: NonZeroUsize,
-    rate: NonZeroU32,
-    duration: u64,
-    jitter: u64,
+    #[command(flatten)]
+    bench: Bench,
+    /// Where to send requests
+    #[arg(long, default_value = "127.0.0.1")]
     hostname: String,
-    port: Option<u16>,
+    /// Which port to send requests to
+    #[arg(long, default_value = "55555")]
+    port: u16,
 }
 
 #[derive(Debug, Subcommand)]
@@ -62,7 +96,7 @@ struct Grpc {}
 #[derive(Debug, Args)]
 struct Rest {}
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, ValueEnum, Eq, PartialEq, Copy)]
 enum Workload {
     Inty,
     Stringy,
@@ -77,10 +111,33 @@ async fn main() -> anyhow::Result<()> {
     info!(?cli);
 
     match cli.program {
-        Program::Server(Server { addr }) => {
-            server::run(&addr).await?;
+        Program::Server(Server {
+            addr,
+            grpc_only,
+            grpc_logger,
+        }) => {
+            server::run(&addr, grpc_only, grpc_logger).await?;
         }
-        Program::Client(_) => {}
+        Program::Client(Client {
+            r#type: type_,
+            hostname,
+            port,
+            bench,
+        }) => {
+            let report = match type_ {
+                ClientType::Grpc(_grpc) => {
+                    let c = client::grpc::Client::connect(format!("http://{hostname}:{port}"))
+                        .await
+                        .context("grpc connect")?;
+                    benchmark(c, bench).await.context("benchmark")?
+                }
+                ClientType::Rest(_rest) => {
+                    let c = client::rest::Client::new(&format!("http://{hostname}:{port}"));
+                    benchmark(c, bench).await.context("benchmark")?
+                }
+            };
+            println!("{report}");
+        }
     }
 
     Ok(())
