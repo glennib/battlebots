@@ -18,6 +18,7 @@ use crate::proto::battlebots_service_server::BattlebotsService as Svc;
 #[derive(Default)]
 struct Parallelism {
     count: AtomicUsize,
+    max_count: AtomicUsize,
 }
 
 impl Parallelism {
@@ -33,7 +34,8 @@ struct Lease<'p> {
 
 impl Drop for Lease<'_> {
     fn drop(&mut self) {
-        self.p.count.fetch_sub(1, Ordering::SeqCst);
+        let prev = self.p.count.fetch_sub(1, Ordering::SeqCst);
+        self.p.max_count.fetch_max(prev, Ordering::SeqCst);
     }
 }
 
@@ -62,7 +64,8 @@ impl BattlebotsService {
                     break;
                 }
                 let parallelism = parallelism_2.count.load(Ordering::SeqCst);
-                info!(parallelism);
+                let parallelism_max = parallelism_2.max_count.load(Ordering::SeqCst);
+                info!(parallelism, parallelism_max);
             }
         });
         Self {

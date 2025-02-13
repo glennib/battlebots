@@ -65,6 +65,11 @@ struct Bench {
     /// Microseconds of jitter for rate limiter
     #[arg(long, default_value = "0")]
     jitter: u64,
+    /// Continue benchmarking if error during service call
+    ///
+    /// Default behavior is to stop at first error
+    #[arg(long)]
+    continue_on_error: bool,
 }
 
 #[derive(Debug, Args)]
@@ -116,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
             grpc_only,
             grpc_logger,
         }) => {
-            server::run(&addr, grpc_only, grpc_logger).await?;
+            tokio::spawn(async move { server::run(&addr, grpc_only, grpc_logger).await }).await??;
         }
         Program::Client(Client {
             r#type: type_,

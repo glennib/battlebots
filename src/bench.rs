@@ -15,12 +15,17 @@ use governor::state::InMemoryState;
 use governor::state::NotKeyed;
 use hdrhistogram::Histogram;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
+use tracing::Span;
+use tracing::error;
 use tracing::info;
+use tracing::instrument;
 
 use crate::Bench;
 use crate::Workload;
 use crate::client::Client;
 
+#[instrument(skip_all)]
 pub async fn benchmark<C>(client: C, bench: Bench) -> anyhow::Result<Report>
 where
     C: Client + Clone + Send + 'static,
@@ -31,6 +36,7 @@ where
         rate,
         duration,
         jitter,
+        continue_on_error,
     } = bench;
     let jitter = Duration::from_micros(jitter);
 
@@ -43,7 +49,17 @@ where
     let workers: Vec<_> = (client, rate_limiter)
         .multiply(workers)
         .map(|(client, rate_limiter)| {
-            tokio::spawn(work(workload, ct.clone(), client, rate_limiter, jitter))
+            tokio::spawn(
+                work(
+                    workload,
+                    ct.clone(),
+                    client,
+                    rate_limiter,
+                    jitter,
+                    continue_on_error,
+                )
+                .instrument(Span::current()),
+            )
         })
         .collect();
     tokio::select! {
@@ -65,12 +81,14 @@ where
     Ok(Report::new(work_reports, elapsed))
 }
 
+#[instrument(skip_all)]
 async fn work<C>(
     workload: Workload,
     ct: CancellationToken,
     mut client: C,
     rate_limiter: Arc<governor::RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
     jitter: Duration,
+    continue_on_error: bool,
 ) -> WorkReport
 where
     C: Client,
@@ -91,10 +109,17 @@ where
             Workload::Mixed => client.mixed().await.map(|_response| ()),
         };
         let elapsed = u64::try_from(begin.elapsed().as_micros()).expect("gosh");
-        if result.is_ok() {
-            histogram.record(elapsed).unwrap();
-        } else {
-            errors += 1;
+        match result {
+            Ok(()) => {
+                histogram.record(elapsed).unwrap();
+            }
+            Err(error) => {
+                errors += 1;
+                if !continue_on_error {
+                    error!(%error, error_dbg=?error);
+                    ct.cancel();
+                }
+            }
         }
     }
     WorkReport {
