@@ -7,6 +7,7 @@ use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
+use futures::future::try_join;
 use tracing::info;
 
 use crate::bench::benchmark;
@@ -33,18 +34,12 @@ enum Program {
 
 #[derive(Debug, Args)]
 struct Server {
-    /// The interface on which to bind the server's listener
+    /// The interface on which to bind the HTTP server's listener
     #[arg(long, default_value = "0.0.0.0:55555")]
-    addr: SocketAddr,
-    /// Serve only grpc (not rest)
-    ///
-    /// Uses a different server (`tonic::transport::server`) which somehow is
-    /// faster, but does not allow regular HTTP routes.
-    #[arg(long)]
-    grpc_only: bool,
-    /// Log parallelism every second for GRPC
-    #[arg(long)]
-    grpc_logger: bool,
+    addr_http: SocketAddr,
+    /// The interface on which to bind the gRPC server's listener
+    #[arg(long, default_value = "0.0.0.0:55556")]
+    addr_grpc: SocketAddr,
 }
 
 #[derive(Debug, Args)]
@@ -117,11 +112,14 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.program {
         Program::Server(Server {
-            addr,
-            grpc_only,
-            grpc_logger,
+            addr_http,
+            addr_grpc,
         }) => {
-            tokio::spawn(async move { server::run(&addr, grpc_only, grpc_logger).await }).await??;
+            let http = tokio::spawn(async move { server::run_http(&addr_http).await });
+            let grpc = tokio::spawn(async move { server::run_grpc(&addr_grpc).await });
+            let (http, grpc) = try_join(http, grpc).await?;
+            http?;
+            grpc?;
         }
         Program::Client(Client {
             r#type: type_,
