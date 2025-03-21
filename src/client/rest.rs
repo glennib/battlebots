@@ -20,6 +20,7 @@ impl Client {
         Self {
             client: reqwest::Client::builder()
                 .http2_prior_knowledge()
+                .pool_max_idle_per_host(1)
                 .build()
                 .unwrap(),
             url_stringy: format!("{base_url}/stringy").into(),
@@ -31,11 +32,10 @@ impl Client {
 
 #[async_trait]
 impl super::Client for Client {
-    type Error = reqwest::Error;
-
     type Stringy = stringy::Payload;
     type Inty = inty::Payload;
     type Mixed = mixed::Payload;
+    type Error = reqwest::Error;
 
     async fn stringy(&mut self) -> Result<Self::Stringy, Self::Error> {
         self.client
