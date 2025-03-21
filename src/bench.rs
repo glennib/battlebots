@@ -37,15 +37,19 @@ where
         duration,
         jitter,
         continue_on_error,
+        warm_up,
     } = bench;
     let jitter = Duration::from_micros(jitter);
+    let duration = Duration::from_secs(duration);
+    let warm_up = Duration::from_secs(warm_up);
 
     let rate_limiter = Arc::new(governor::RateLimiter::direct(
         Quota::per_second(rate).allow_burst(NonZero::new(1).unwrap()),
     ));
     let ct = CancellationToken::new();
+    let ct_warm_up = CancellationToken::new();
 
-    let begin = Instant::now();
+    info!("Warming up for {:.1} s", warm_up.as_secs_f64());
     let workers: Vec<_> = (client, rate_limiter)
         .multiply(workers)
         .map(|(client, rate_limiter)| {
@@ -57,22 +61,44 @@ where
                     rate_limiter,
                     jitter,
                     continue_on_error,
+                    ct_warm_up.clone(),
                 )
                 .instrument(Span::current()),
             )
         })
         .collect();
-    tokio::select! {
+    let cancelled = tokio::select! {
         () = ct.cancelled() => {
             info!("Cancelled by worker");
+            true
         },
-        () = tokio::time::sleep(Duration::from_secs(duration)) => {
-            info!("Finished");
+        () = tokio::time::sleep(warm_up) => {
+            info!("Completed warm up");
+            false
         },
         result = tokio::signal::ctrl_c() => {
             result.expect("failed to listen for ctrl-c");
             info!("Cancelled by user");
+            true
         },
+    };
+    ct_warm_up.cancel();
+    let mut begin = Instant::now();
+    if !cancelled {
+        info!("Benchmarking for {:.1} s", duration.as_secs_f64());
+        begin = Instant::now();
+        tokio::select! {
+            () = ct.cancelled() => {
+                info!("Cancelled by worker");
+            },
+            () = tokio::time::sleep(duration) => {
+                info!("Finished");
+            },
+            result = tokio::signal::ctrl_c() => {
+                result.expect("failed to listen for ctrl-c");
+                info!("Cancelled by user");
+            },
+        }
     }
     ct.cancel();
     let work_reports = try_join_all(workers).await.context("joining workers")?;
@@ -89,6 +115,7 @@ async fn work<C>(
     rate_limiter: Arc<governor::RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
     jitter: Duration,
     continue_on_error: bool,
+    ct_warm_up: CancellationToken,
 ) -> WorkReport
 where
     C: Client,
@@ -97,10 +124,33 @@ where
     let mut histogram = Histogram::new(3).unwrap();
     let begin = Instant::now();
     let mut errors = 0;
+
     loop {
         tokio::select! {
+            () = ct_warm_up.cancelled() => { break; },
             () = rate_limiter.until_ready_with_jitter(jitter) => {},
+        }
+        let result = match workload {
+            Workload::Inty => client.inty().await.map(|_response| ()),
+            Workload::Stringy => client.stringy().await.map(|_response| ()),
+            Workload::Mixed => client.mixed().await.map(|_response| ()),
+        };
+        match result {
+            Ok(()) => {}
+            Err(error) => {
+                errors += 1;
+                if !continue_on_error {
+                    error!(%error, error_dbg=?error, "error during warm-up");
+                    ct.cancel();
+                }
+            }
+        }
+    }
+
+    loop {
+        tokio::select! {
             () = ct.cancelled() => { break; },
+            () = rate_limiter.until_ready_with_jitter(jitter) => {},
         }
         let begin = Instant::now();
         let result = match workload {

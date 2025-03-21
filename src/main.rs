@@ -58,13 +58,16 @@ struct Bench {
     #[arg(long)]
     duration: u64,
     /// Microseconds of jitter for rate limiter
-    #[arg(long, default_value = "0")]
+    #[arg(long, default_value = "20")]
     jitter: u64,
     /// Continue benchmarking if error during service call
     ///
     /// Default behavior is to stop at first error
     #[arg(long)]
     continue_on_error: bool,
+    /// Run for this amount of seconds before starting to measure
+    #[arg(long, default_value = "5")]
+    warm_up: u64,
 }
 
 #[derive(Debug, Args)]
@@ -77,9 +80,6 @@ struct Client {
     /// Where to send requests
     #[arg(long, default_value = "127.0.0.1")]
     hostname: String,
-    /// Which port to send requests to
-    #[arg(long, default_value = "55555")]
-    port: u16,
 }
 
 #[derive(Debug, Subcommand)]
@@ -91,10 +91,18 @@ enum ClientType {
 }
 
 #[derive(Debug, Args)]
-struct Grpc {}
+struct Grpc {
+    /// Which port to send requests to
+    #[arg(long, default_value = "55556")]
+    port: u16,
+}
 
 #[derive(Debug, Args)]
-struct Rest {}
+struct Rest {
+    /// Which port to send requests to
+    #[arg(long, default_value = "55555")]
+    port: u16,
+}
 
 #[derive(Debug, Clone, ValueEnum, Eq, PartialEq, Copy)]
 enum Workload {
@@ -124,17 +132,16 @@ async fn main() -> anyhow::Result<()> {
         Program::Client(Client {
             r#type: type_,
             hostname,
-            port,
             bench,
         }) => {
             let report = match type_ {
-                ClientType::Grpc(_grpc) => {
+                ClientType::Grpc(Grpc { port }) => {
                     let c = client::grpc::Client::connect(format!("http://{hostname}:{port}"))
                         .await
                         .context("grpc connect")?;
                     benchmark(c, bench).await.context("benchmark")?
                 }
-                ClientType::Rest(_rest) => {
+                ClientType::Rest(Rest { port }) => {
                     let c = client::rest::Client::new(&format!("http://{hostname}:{port}"));
                     benchmark(c, bench).await.context("benchmark")?
                 }
